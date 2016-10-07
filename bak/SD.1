@@ -1,0 +1,373 @@
+#!/usr/bin/perl -w
+#	0 	parsed header, with debug statements
+#	1	removed header debug, build parse_tickets sub
+#	2	added handler for empty cells
+#	3	working on building tickets hash, almost done, about to assign anon hash to %tickets
+#	4	%tickets built 
+#	5	get_info (Title, Author, Created)
+#	6	remove debug statements from parse_tickets
+#	7	define config variables; BASE_DIR, CASES, export_file, initial create_cases sub
+#	8	create_summary sub finished
+#	9	feedback, number of cases created
+#	renamed brute.pl to SD.pl
+#	0	case_info sub implmented, fixed print issue with %
+#	1	copied in parse.pl code,  changed main to bulk_parse sub
+#	#	Summary, Priority, Urgency, End User, Requestor, Change #
+#	future	config variables, case dir creation, state files. audit logging ( who ran, number or cases created) cleanup ( keep # of old export files, prune back just new cases)
+use English qw( -no_match_vars );
+use Carp; 
+use strict;
+require '/home/lowk/bin/lowlib.pl';
+my $TRUE = 1;
+my $FALSE = 0;
+
+print "xml brute force\n";
+my $BASE = '/home/lowk';
+my $CASES = ${BASE} . '/dev/cases';
+#my $export_file='/home/lowk/dev/excel/export.xls';
+my $export_file=${BASE} . '/dev/ServiceDesk/export.xls';
+my @export = read_file($export_file);
+
+my %info = get_info();		# get Title, Author & Created TS
+my @header = get_header();	# parse out header row
+my %tickets = parse_tickets(@header);		# parse tickets from export
+#test_tickets(%tickets);
+my @new_cases = create_cases($CASES, %tickets);
+print_info();
+
+
+### End MAIN
+
+sub create_cases
+{
+   my ($cases, %tickets) = @_;
+   my $case_dir_mode = 0770;	# allow group full access
+   my (@new_cases) = ();
+   print("create_cases\n");
+   foreach my $key (keys(%tickets))
+   {
+      my $case = ${cases} . "/" . ${key};
+      if ( -e $case )
+      {
+         print("CASE: $case\tEXISTS\n");
+         # case aleady exist
+      }
+      else # create case
+      {
+         mkdir($case, $case_dir_mode) or croak("Could not create $case\n");
+         chmod($case_dir_mode, $case) or croak("Could not chmod $case\n");
+         my $summary = $tickets{$key}->{Summary};
+         create_summary($summary, $case, $case_dir_mode);
+         create_info($key, $tickets{$key}, $case, $case_dir_mode);
+         push(@new_cases, $key);
+      }
+   }
+   print($#new_cases+1," cases created\n");
+#   print(join(',',@new_cases));
+   return(@new_cases);
+}
+
+sub create_info
+{
+   my ($key, $ticket, $case, $mode) = @_;
+   print("Create Info\n");
+   my $info_file = ${case} . "/info";
+#	#	Summary, Priority, Urgency, End User, Requestor, Change #
+   my $field = 'Requestor';
+   my @info = ('Requestor', 'End User', 'Open Date', 'Priority', 'Urgency', 'Change #');
+   open(INFO, ">${info_file}") or croak("${info_file} cannot be created: $OS_ERROR.");
+   printf(INFO "Request:%s\n", $key);
+   foreach my $field (@info)
+   {
+      printf(INFO "%s:%s\n", $field, $ticket->{$field});
+   }
+   close(INFO);
+   chmod($mode, $info_file) or croak("Could not chmod $info_file\n");
+}
+
+sub create_summary
+{
+   my ($summary, $case, $mode) = @_;
+   print("Create summary for $case\n");
+   my $summary_file = ${case} . "/summary";
+   print("$summary_file\n");
+   open(SUM, ">${summary_file}") or croak("${summary_file} cannot be created: $OS_ERROR.");
+   printf(SUM "%s\n", ${summary});
+   close(SUM);
+   chmod($mode, $summary_file) or croak("Could not chmod $summary_file\n");
+}
+
+
+sub test_tickets
+{
+   my %tickets = @_;
+   foreach my $key (keys(%tickets))
+   {
+      print("CASE: $key\tURGENCY: $tickets{$key}->{Summary}\n");
+#      print("CASE: $key\tURGENCY: $tickets{$key}->{Urgency}\n");
+   }
+}
+
+sub print_info
+{ 
+   print("Title: $info{title}\n");
+   print("Author: $info{author}\n");
+   print("Created: $info{created}\n");
+}
+
+
+
+
+sub parse_tickets
+{
+   my @header = @_;
+   my (%tickets, @fields) = ();
+   my ($field, $row) = 0;
+   my $data = "";
+   LINE: foreach my $line (@export)
+   {
+      if ( $line =~ m/<Row/ )	# find start of new row
+      {
+         if ( $row ) { croak("Row inside of a row"); }
+         @fields = ();
+         $field=0;
+         $row=1;		# set in row flag
+      }
+      if ( $line =~ m/<Cell[^>]*>/ )	# find beginning of cell
+         { $data = ""; }		# blank out data 
+      if ( ($row) && ($line =~ m/\[CDATA\[([^\]]+)/) )
+      {
+         $data = $1;
+         $field++;
+      }
+      if ( $line =~ m/<\/Cell[^>]*>/ )	# find end of cell
+         { push(@fields, $data); }
+      if ( $line =~ m/<\/Row>/ )
+      {
+         if ( ! $row ) { croak("Row ending outside  of a row"); }
+         if ( $#fields == $#header ) # check proper number of fields
+         {
+            %tickets = build_ticket(\%tickets, \@fields, \@header);	# build ticket
+         }
+         else
+         {
+            print("fields: $#fields\n");
+            print("header: $#header\n");
+            croak("Data fields did not match header\n");
+         }
+         $row=0;		# set end of row flag
+      }
+   }
+   return(%tickets);
+
+}
+
+sub build_ticket
+{
+   my ($t, $f, $h) = @_;
+   my %tickets = %{ $t };
+   my @fields = @{ $f };
+   my @header = @{ $h };
+   my $case = shift(@fields);	# get case # from first field
+   shift(@header);		# shift off first header field
+   my %ticket=();
+   @ticket{@header} = @fields;
+   $tickets{$case} = \%ticket;
+
+   return(%tickets);
+}
+
+sub get_header
+{
+   my @header = ();
+   my ($ln_num, $header)=0;
+   HEADER: foreach my $line (@export)
+   {
+      if ( $line =~ m/<Row>/ )	# find start of header row
+         { $header=1; }		# set that we are in the header row
+      if ( ($header) && ($line =~ m/\[CDATA\[([^\]]+)/) )
+      {
+         my $header = $1;
+         push(@header, $header);
+      }
+      if ( $line =~ m/<\/Row>/ )
+      {
+         $ln_num++;	# so that we trim off all the processed lines
+         last HEADER;
+      }
+      $ln_num++;
+   }
+   @export = @export[$ln_num ... $#export ];
+   return @header
+}
+
+sub get_info
+{
+   my %info = ();
+   foreach my $line (@export)
+   {
+
+      if ( $line =~ m/<Title>([^<]+)</ ) { $info{title} = $1; }
+      if ( $line =~ m/<Author>([^<]+)</ ) { $info{author} = $1; }
+      if ( $line =~ m/<Created>([^<]+)</ ) { $info{created} = $1; }
+   }
+   return(%info);
+}
+
+sub bulk_parse
+{
+   
+   my $parse_file = check_args(@ARGV);
+   # set defaults
+   # check command line arguments and set override defaults
+   
+   my (@emails, @servers, @ips, @logins, @groups) = ();
+   
+   my @lines = read_file(${parse_file});
+   
+   my %users_list = get_users();
+   
+   #print_array(@lines);
+   
+   for my $line (@lines)
+   {
+      @groups = get_groups($line, @groups);
+   # printf("%s\n", ${line});
+      for my $word (split(/\s+/, ${line}))
+      {
+         if ( is_email(${word}) ) { push(@emails, ${word}); }
+         if ( is_server(${word}) ) { push(@servers, ${word}); }
+         if ( is_ip(${word}) ) { push(@ips, ${word}); }
+         if ( is_login(${word}, %users_list) ) { push(@logins, ${word}); }
+      }
+   }
+   
+   #print_array(@emails);
+   #print_array(@servers);
+   #print_array(@ips);
+   #print_array(@logins);
+   #print_array(@groups);
+   
+   create_file("emails", ${parse_file}, @emails);
+   create_file("servers", ${parse_file}, @servers);
+   create_file("ips", ${parse_file}, @ips);
+   create_file("logins", ${parse_file}, @logins);
+   create_file("groups", ${parse_file}, @groups);
+   # backup and output files
+}	#	End bulk_parse
+
+sub get_groups
+{
+   my ($line, @groups) = @_;
+   if ( $line =~ m/\S*group\S*\s+(\S+)/i )
+   {
+      push(@groups, $1);
+   }
+   return(@groups);
+}
+
+
+
+sub create_file
+{
+   my ($filename, $extension, @contents) = @{_};
+   unless ( @contents )
+   {
+      return();
+   }
+   my $fn = "${filename}.${extension}";
+   if ( -e ${fn} )
+   {
+      my $ts = get_timestamp();
+      rename(${fn}, "${fn}.${ts}");
+   }
+   open(FILE, ">${fn}") or die("Couldn't open ${fn}\n");
+   foreach my $line (@contents)
+   {
+      printf(FILE "${line}\n");
+   }
+   close(FILE);
+}
+
+
+sub check_args
+{
+   my @ARGV = @_;
+   my $filename = "summary";
+   if ( $#ARGV > 0 )
+   {
+      printf("\nUsage: %s PARSE_FILE (optional) [default file \"summary\" ]\n\n", ${0});
+      exit();
+   }
+   elsif ( $#ARGV == 0 )
+   {
+      ${filename} = shift(@ARGV);
+   }
+   return ${filename};
+}
+
+sub get_logins
+{
+   my @users = @_;
+   my %logins_list = ();
+   for my $line (@users)
+   {
+      if ( ${line} =~ m/ uid:\s+(\S+)/ )
+      {
+         my $login = ${1};
+         $logins_list{$login} = 1;
+      }
+   }
+   return %logins_list;
+}
+
+sub get_users
+{
+   my @users_linux = `/usr/local/ldap/bin/ldap_user_query.pl \\* linux`;
+   my @users_aix = `/usr/local/ldap/bin/ldap_user_query.pl \\* aix`;
+   my @users_solaris = `/usr/local/ldap/bin/ldap_user_query.pl \\* solaris`;
+   my %users_linux  = get_logins(@users_linux);
+   my %users_aix  = get_logins(@users_aix);
+   my %users_solaris  = get_logins(@users_solaris);
+
+   my %users_list = (%users_linux, %users_aix, %users_solaris);
+
+   return %users_list;
+}
+
+# login - check ldap
+sub is_login
+{
+   my ($word, %users_list) = @_;
+   if( $users_list{${word}} )
+   {
+      return ${TRUE};
+   }
+   return ${FALSE};
+}
+
+# ip address
+sub is_ip
+{
+   my ($word) = @{_};
+   if ( ${word} =~ m/^(\d{1,3}\.){3}\d{1,3}/ ) { return $TRUE; }
+   return ${FALSE};
+}
+
+# server dc1 dc2 cdl # ping string
+sub is_server
+{
+   my ($word) = @{_};
+   if ( ${word} =~m/^(cdl)|(dc1)|(dc2)/i ) { return $TRUE; }
+   return ${FALSE};
+}
+
+# email @adp.com
+sub is_email
+{
+   my ($word) = @{_};
+   if ( ${word} =~ m/\@adp.com/i ) { return $TRUE; }
+   return ${FALSE};
+}
+
+# group

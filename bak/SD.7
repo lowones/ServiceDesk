@@ -1,0 +1,571 @@
+#!/usr/bin/perl -w
+#	0 	parsed header, with debug statements
+#	1	removed header debug, build parse_tickets sub
+#	2	added handler for empty cells
+#	3	working on building tickets hash, almost done, about to assign anon hash to %tickets
+#	4	%tickets built 
+#	5	get_info (Title, Author, Created)
+#	6	remove debug statements from parse_tickets
+#	7	define config variables; BASE_DIR, CASES, export_file, initial create_cases sub
+#	8	create_summary sub finished
+#	9	feedback, number of cases created
+#	renamed brute.pl to SD.pl
+#	0	case_info sub implmented, fixed print issue with %
+#	1	copied in parse.pl code,  changed main to bulk_parse sub
+#	2	updated create_file,  got bulk_parse mostly working as bp sub
+#	3	removing debug statements, added check for new cases before bulk parse
+#	4	implemented import filename argument handling figure_export
+#	-	start work on audit reporting, added export file format checker to get_info,  output comma seperated audit variables,   added File::Basename for filename generation,   work on next index
+#	5	get_index implemented,  need to test
+#	6	test get_index, finish create audit, audit_new_cases implemented
+#	7	add File::Copy for archive_export_file (implemented)
+#	#	need to add Parent field for info
+#	future	state files. audit logging ( who ran, number or cases created) cleanup ( keep # of old export files, prune back just new cases)
+# audit format
+# import run timestamp(YYYYMMDDhhmm),os id,# of cases,  # of new cases, report id, report timestamp, import filename, new cases filename
+#		validate export file is valid
+use English qw( -no_match_vars );
+use Carp; 
+use File::Basename;
+use File::Copy;
+use strict;
+require '/home/lowk/bin/lowlib.pl';
+my $TRUE = 1;
+my $FALSE = 0;
+
+#print "xml brute force\n";
+my $BASE = '/home/lowk';
+my $CASES = ${BASE} . '/dev/cases';
+my $AUDIT = ${BASE} . '/dev/log';
+my $AUDIT_FILE = ${AUDIT} . '/case_audit.log';
+my $export_file=figure_export_file(@ARGV);
+print("EXPORT FILE ${export_file}\n");
+my @export = read_file($export_file);
+
+my %info = get_info();		# get Title, Author & Created TS
+my @header = get_header();	# parse out header row
+my %tickets = parse_tickets(@header);		# parse tickets from export
+#test_tickets(%tickets);
+my @new_cases = create_cases($CASES, %tickets);
+my $number_of_new_cases = @new_cases;
+if ($number_of_new_cases > 0)
+   { bp(@new_cases); }
+else
+   { print("No new cases\n"); }
+audit_report(@new_cases);
+
+
+### End MAIN
+
+sub get_greatest_audit_index
+{
+   my ($audit_file) = @_;
+   my $greatest_index = 0;
+#   print("AUDIT LOG\t$audit_file\n");
+   if ( -e ${audit_file} )
+   {
+      my @audit = read_file(${audit_file});
+      my $cur_index = 0;
+      foreach my $line (@audit)
+      {
+         if ( $line =~ /^(\d.),/ )
+         {
+            $cur_index=int($1);
+            if ( ${cur_index} > ${greatest_index} )
+               { $greatest_index=$cur_index; }
+         }
+      }
+   }
+   else
+   {
+      print("No audit file: $audit_file\n");
+   }
+   return(${greatest_index});
+}
+
+sub get_greatest_file_index
+{
+   my ($log_dir) = @_;
+   my $regx = qr/\.(\d+)$/;
+   my $greatest_index = 0;
+   opendir(DIR, ${log_dir}) or croak("Could not open $log_dir $!\n");
+   while(defined(my $file = readdir(DIR)))
+   {
+      my $cur_index = 0;
+      if ( ${file} =~ $regx )
+         { $cur_index=int($1); }
+      if ( ${cur_index} > ${greatest_index} )
+         { $greatest_index=$cur_index; }
+   }
+   closedir(DIR);
+   return(${greatest_index});
+}
+
+sub get_index
+{
+   print("Figure next index\n");
+   my $greatest_file_index = get_greatest_file_index(${AUDIT});
+   my $greatest_audit_index = get_greatest_audit_index(${AUDIT_FILE});
+   print("INDEX F\t${greatest_file_index}\n");
+   print("INDEX A\t${greatest_audit_index}\n");
+   if ( $greatest_file_index == $greatest_audit_index )
+   {
+      return($greatest_audit_index);
+   }
+   elsif ( $greatest_audit_index == 0)
+   {
+      croak("$AUDIT_FILE missing or out of sync\n");
+   }
+   else
+   {
+      print("$AUDIT_FILE and archive files out of sync\n");
+      print("INDEX F\t$greatest_file_index\n");
+      print("INDEX A\t$greatest_audit_index\n");
+      if ( $greatest_file_index > $greatest_audit_index )
+      {
+         return($greatest_file_index);
+      }
+      else
+      {
+         return($greatest_audit_index);
+      }
+   }
+}
+
+sub audit_report
+{
+   my (@new_cases) = @_;
+#   print("Audit Report\n");
+# import run timestamp(YYYYMMDDhhmm) $ts
+# os id			$username
+# number of cases	$total_cases
+# number of new cases	$nc
+# report id		$author
+# report timestamp	$created
+# import filename
+# new cases filename
+   my $audit_header = '';
+   my $index = get_index();
+   my $ts = get_timestamp();
+   my $username = $ENV{LOGNAME} || $ENV{USER} || getpwuid($<);
+   my @tickets = keys(%tickets);
+   my $total_cases = @tickets;
+   print("Total cases: ${total_cases}\n");
+   my $nc = ${number_of_new_cases};
+#   print("Title: $info{title}\n");
+   my $author =  $info{author};
+   my $created_ts = $info{created};
+   if ( ${index} == 0 )
+      { $audit_header='INDEX,TIMESTAMP,USER,CASES,NEW CASES,AUTHOR,CREATED,REPORT,NEW CASES AUDIT'; }
+   $index++;
+   audit_new_cases($AUDIT, $index, @new_cases);
+   archive_export_file($AUDIT, $index, $export_file);
+   my $audit_entry = join(',', (${index},${ts},${username},${total_cases},${nc},${author},${created_ts}));
+#   printf("%s,%s,%s,%s,%s,%s\n", ${ts},${username},${total_cases},${nc},${author},${created_ts});
+#   print_info();
+}
+
+sub archive_export_file
+{
+   my ($audit_dir, $index, $file) = @_;
+   my $base_fn = basename($file);
+   my $archive_file=${audit_dir} . '/' . ${base_fn}  . '.' . ${index};
+   print("Archive File Name\t$archive_file\n");
+   if ( -e ${archive_file} )
+      { croak("ERROR: ${archive_file} appeared out of no where!\n"); }
+   if ( ! -e ${file} )
+      { croak("ERROR: ${file} disappeared!\n"); }
+   move(${file},${archive_file}) or croak("File cannot be moved: $OS_ERROR");
+}
+
+sub audit_new_cases
+{
+   my ($audit_dir, $index, @cases) = @_;
+   my $num_cases = @cases;
+   if ( ${num_cases} == 0 )
+      { return() }
+   my $mode = 0770;	# allow group full access
+   my $new_cases_file = $audit_dir . '/new_cases.' . $index;
+   print("$new_cases_file\n");
+   if ( -e ${new_cases_file} )
+      { croak("ERROR: ${new_cases_file} appeared out of no where!\n"); }
+   open(NC, ">${new_cases_file}") or croak("${new_cases_file} cannot be created: $OS_ERROR.");
+   my $new_cases = join(',', sort(@cases));
+   printf(NC "%s\n", ${new_cases});
+   close(NC);
+   chmod($mode, $new_cases_file) or croak("Could not chmod $new_cases_file\n");
+}
+
+sub create_audit
+{
+   my ($entry, $header) = @_;
+   print("${header}\n");
+   print("${entry}\n");
+}
+
+sub figure_export_file
+{
+   my @ARGS = @_;
+   my $number_of_args = @ARGS;
+   if ( $number_of_args > 1)
+      { croak("Too many commandline arguments\n"); }
+   my $export_file=${BASE} . '/dev/ServiceDesk/export.xls';
+   if ( $number_of_args == 1 )
+   {
+      print_array(@ARGS);
+      my ($ex_file) = @ARGS;
+#      print("possible export filename: $ex_file\n");
+      if ( -e $ex_file )
+         { $export_file = $ex_file; }
+      else
+         { croak("Export file: $ex_file DOES NOT exist!\n"); }
+   }
+   return $export_file;
+}
+sub create_cases
+{
+   my ($cases, %tickets) = @_;
+   my $case_dir_mode = 0770;	# allow group full access
+   my (@new_cases) = ();
+#   print("create_cases\n");
+   foreach my $key (keys(%tickets))
+   {
+      my $case = ${cases} . "/" . ${key};
+      if ( -e $case )
+      {
+#         print("CASE: $case\tEXISTS\n");
+         # case aleady exist
+      }
+      else # create case
+      {
+         mkdir($case, $case_dir_mode) or croak("Could not create $case\n");
+         chmod($case_dir_mode, $case) or croak("Could not chmod $case\n");
+         my $summary = $tickets{$key}->{Summary};
+         create_summary($summary, $case, $case_dir_mode);
+         create_info($key, $tickets{$key}, $case, $case_dir_mode);
+         push(@new_cases, $key);
+      }
+   }
+   print($#new_cases+1," cases created\n");
+   return(@new_cases);
+}
+
+sub create_info
+{
+   my ($key, $ticket, $case, $mode) = @_;
+#   print("Create Info\n");
+   my $info_file = ${case} . "/info";
+   my $field = 'Requestor';
+   my @info = ('Requestor', 'End User', 'Open Date', 'Priority', 'Urgency', 'Parent', 'Change #');
+   open(INFO, ">${info_file}") or croak("${info_file} cannot be created: $OS_ERROR.");
+   printf(INFO "Request:%s\n", $key);
+   foreach my $field (@info)
+   {
+      printf(INFO "%s:%s\n", $field, $ticket->{$field});
+   }
+   close(INFO);
+   chmod($mode, $info_file) or croak("Could not chmod $info_file\n");
+}
+
+sub create_summary
+{
+   my ($summary, $case, $mode) = @_;
+#   print("Create summary for $case\n");
+   my $summary_file = ${case} . "/summary";
+#   print("$summary_file\n");
+   open(SUM, ">${summary_file}") or croak("${summary_file} cannot be created: $OS_ERROR.");
+   printf(SUM "%s\n", ${summary});
+   close(SUM);
+   chmod($mode, $summary_file) or croak("Could not chmod $summary_file\n");
+}
+
+
+sub test_tickets
+{
+   my %tickets = @_;
+   foreach my $key (keys(%tickets))
+      { print("CASE: $key\tURGENCY: $tickets{$key}->{Summary}\n"); }
+}
+
+sub print_info
+{ 
+   print("Title: $info{title}\n");
+   print("Author: $info{author}\n");
+   print("Created: $info{created}\n");
+}
+
+
+
+
+sub parse_tickets
+{
+   my @header = @_;
+   my (%tickets, @fields) = ();
+   my ($field, $row) = 0;
+   my $data = "";
+   LINE: foreach my $line (@export)
+   {
+      if ( $line =~ m/<Row/ )	# find start of new row
+      {
+         if ( $row ) { croak("Row inside of a row"); }
+         @fields = ();
+         $field=0;
+         $row=1;		# set in row flag
+      }
+      if ( $line =~ m/<Cell[^>]*>/ )	# find beginning of cell
+         { $data = ""; }		# blank out data 
+      if ( ($row) && ($line =~ m/\[CDATA\[([^\]]+)/) )
+      {
+         $data = $1;
+         $field++;
+      }
+      if ( $line =~ m/<\/Cell[^>]*>/ )	# find end of cell
+         { push(@fields, $data); }
+      if ( $line =~ m/<\/Row>/ )
+      {
+         if ( ! $row ) { croak("Row ending outside  of a row"); }
+         if ( $#fields == $#header ) # check proper number of fields
+         {
+            %tickets = build_ticket(\%tickets, \@fields, \@header);	# build ticket
+         }
+         else
+         {
+            print("fields: $#fields\n");
+            print("header: $#header\n");
+            croak("Data fields did not match header\n");
+         }
+         $row=0;		# set end of row flag
+      }
+   }
+   return(%tickets);
+
+}
+
+sub build_ticket
+{
+   my ($t, $f, $h) = @_;
+   my %tickets = %{ $t };
+   my @fields = @{ $f };
+   my @header = @{ $h };
+   my $case = shift(@fields);	# get case # from first field
+   shift(@header);		# shift off first header field
+   my %ticket=();
+   @ticket{@header} = @fields;
+   $tickets{$case} = \%ticket;
+
+   return(%tickets);
+}
+
+sub get_header
+{
+   my @header = ();
+   my ($ln_num, $header)=0;
+   HEADER: foreach my $line (@export)
+   {
+      if ( $line =~ m/<Row>/ )	# find start of header row
+         { $header=1; }		# set that we are in the header row
+      if ( ($header) && ($line =~ m/\[CDATA\[([^\]]+)/) )
+      {
+         my $header = $1;
+         push(@header, $header);
+      }
+      if ( $line =~ m/<\/Row>/ )
+      {
+         $ln_num++;	# so that we trim off all the processed lines
+         last HEADER;
+      }
+      $ln_num++;
+   }
+   @export = @export[$ln_num ... $#export ];
+   return @header
+}
+
+sub get_info
+{
+   my %info = ();
+   my $found = 0;
+   foreach my $line (@export)
+   {
+
+      if ( $line =~ m/<Title>([^<]+)</ ) { $info{title} = $1; $found++;}
+      if ( $line =~ m/<Author>([^<]+)</ ) { $info{author} = $1; $found++;}
+      if ( $line =~ m/<Created>([^<]+)</ ) { $info{created} = $1; $found++;}
+   }
+   if ($found < 3)
+      { croak("Export file not in proper format\n"); }
+   return(%info);
+}
+
+sub bp
+{
+   my (@cases) = @_;
+#   print("bulk parse summary\n");
+   my %users_list = get_users();
+   for my $case (@cases)
+   {
+      my (@lines, @emails, @servers, @ips, @logins, @groups) = ();
+      my $parse_file = 'Summary';
+      push(@lines, $tickets{$case}->{$parse_file});
+      for my $line (@lines)
+      {
+         @groups = get_groups($line, @groups);
+#         print_array(@groups);
+         for my $word (split(/\s+/, ${line}))
+         {
+            if ( is_email(${word}) ) { push(@emails, ${word}); }
+            if ( is_server(${word}) ) { push(@servers, ${word}); }
+            if ( is_ip(${word}) ) { push(@ips, ${word}); }
+            if ( is_login(${word}, %users_list) ) { push(@logins, ${word}); }
+         }
+      }
+      create_file($case, "emails", ${parse_file}, @emails);
+      create_file($case, "servers", ${parse_file}, @servers);
+      create_file($case, "ips", ${parse_file}, @ips);
+      create_file($case, "logins", ${parse_file}, @logins);
+      create_file($case, "groups", ${parse_file}, @groups);
+   }
+}
+
+sub bulk_parse
+{
+   
+   my $parse_file = check_args(@ARGV);
+   my (@emails, @servers, @ips, @logins, @groups) = ();
+   my @lines = read_file(${parse_file});
+   my %users_list = get_users();
+   
+   for my $line (@lines)
+   {
+      @groups = get_groups($line, @groups);
+      for my $word (split(/\s+/, ${line}))
+      {
+         if ( is_email(${word}) ) { push(@emails, ${word}); }
+         if ( is_server(${word}) ) { push(@servers, ${word}); }
+         if ( is_ip(${word}) ) { push(@ips, ${word}); }
+         if ( is_login(${word}, %users_list) ) { push(@logins, ${word}); }
+      }
+   }
+   
+   #print_array(@emails);
+   #print_array(@servers);
+   #print_array(@ips);
+   #print_array(@logins);
+   #print_array(@groups);
+   
+   create_file("emails", ${parse_file}, @emails);
+   create_file("servers", ${parse_file}, @servers);
+   create_file("ips", ${parse_file}, @ips);
+   create_file("logins", ${parse_file}, @logins);
+   create_file("groups", ${parse_file}, @groups);
+   # backup and output files
+}	#	End bulk_parse
+
+sub get_groups
+{
+   my ($line, @groups) = @_;
+   if ( $line =~ m/\S*group\S*\s+(\S+)/i )
+      { push(@groups, $1); }
+   return(@groups);
+}
+
+
+sub create_file
+{
+   my ($case, $filename, $extension, @contents) = @{_};
+   my $mode = 0770;	# allow group full access
+   unless ( @contents )
+      { return(); }
+   my $fn = $CASES . "/" . $case . "/${filename}.${extension}";
+   if ( -e ${fn} )
+   {
+      my $ts = get_timestamp();
+      rename(${fn}, "${fn}.${ts}");
+   }
+   open(FILE, ">${fn}") or die("Couldn't open ${fn}\n");
+   foreach my $line (@contents)
+      { printf(FILE "%s\n", ${line}); }
+   close(FILE);
+   chmod($mode, $fn) or croak("Could not chmod $fn\n");
+}
+
+
+sub check_args
+{
+   my @ARGV = @_;
+   my $filename = "summary";
+   if ( $#ARGV > 0 )
+   {
+      printf("\nUsage: %s PARSE_FILE (optional) [default file \"summary\" ]\n\n", ${0});
+      exit();
+   }
+   elsif ( $#ARGV == 0 )
+      { ${filename} = shift(@ARGV); }
+   return ${filename};
+}
+
+
+sub get_logins
+{
+   my @users = @_;
+   my %logins_list = ();
+   for my $line (@users)
+   {
+      if ( ${line} =~ m/ uid:\s+(\S+)/ )
+      {
+         my $login = ${1};
+         $logins_list{$login} = 1;
+      }
+   }
+   return %logins_list;
+}
+
+sub get_users
+{
+   my @users_linux = `/usr/local/ldap/bin/ldap_user_query.pl \\* linux`;
+   my @users_aix = `/usr/local/ldap/bin/ldap_user_query.pl \\* aix`;
+   my @users_solaris = `/usr/local/ldap/bin/ldap_user_query.pl \\* solaris`;
+   my %users_linux  = get_logins(@users_linux);
+   my %users_aix  = get_logins(@users_aix);
+   my %users_solaris  = get_logins(@users_solaris);
+
+   my %users_list = (%users_linux, %users_aix, %users_solaris);
+
+   return %users_list;
+}
+
+# login - check ldap
+sub is_login
+{
+   my ($word, %users_list) = @_;
+   if( $users_list{${word}} )
+   {
+      return ${TRUE};
+   }
+   return ${FALSE};
+}
+
+# ip address
+sub is_ip
+{
+   my ($word) = @{_};
+   if ( ${word} =~ m/^(\d{1,3}\.){3}\d{1,3}/ ) { return $TRUE; }
+   return ${FALSE};
+}
+
+# server dc1 dc2 cdl # ping string
+sub is_server
+{
+   my ($word) = @{_};
+   if ( ${word} =~m/^(cdl)|(dc1)|(dc2)/i ) { return $TRUE; }
+   return ${FALSE};
+}
+
+# email @adp.com
+sub is_email
+{
+   my ($word) = @{_};
+   if ( ${word} =~ m/\@adp.com/i ) { return $TRUE; }
+   return ${FALSE};
+}
+
+# group

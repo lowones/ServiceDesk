@@ -1,0 +1,114 @@
+#!/usr/bin/perl -w
+#	0 	parsed header, with debug statements
+#	1	removed header debug, build parse_tickets sub
+#	2	added handler for empty cells
+#	#	working on building tickets hash, almost done, about to assign anon hash to %tickets
+use Carp; 
+use strict;
+require '/home/lowk/bin/lowlib.pl';
+
+print "xml brute force\n";
+my $export_file='/home/lowk/dev/excel/export.xls';
+my @export = read_file($export_file);
+
+my @header = get_header();	# parse out header row
+print("$export[0]\n");
+parse_tickets(@header);		# parse tickets from export
+
+sub parse_tickets
+{
+   my @header = @_;
+   print_array(@header);
+   my (%tickets, @fields) = ();
+   my ($field, $row) = 0;
+   my $data = "";
+   print("first field: $header[$field]\n");
+   LINE: foreach my $line (@export)
+   {
+      if ( $line =~ m/<Row/ )	# find start of new row
+      {
+         if ( $row ) { croak("Row inside of a row"); }
+         @fields = ();
+         $field=0;
+         $row=1;		# set in row flag		# set in row flag
+      }
+      if ( $line =~ m/<Cell[^>]*>/ )	# find beginning of cell
+      {
+         $data = "";		# blank out data
+#         print("beginning of a cell\n");
+      }
+      if ( ($row) && ($line =~ m/\[CDATA\[([^\]]+)/) )
+      {
+         $data = $1;
+#         $tickets{$header[$field]}=$data;
+         $field++;
+      }
+      if ( $line =~ m/<\/Cell[^>]*>/ )	# find beginning of cell
+      {
+#         $data = "";		# blank out data
+#         print("end of a cell\n");
+         push(@fields, $data);
+      }
+      if ( $line =~ m/<\/Row>/ )
+      {
+         if ( ! $row ) { croak("Row ending outside  of a row"); }
+         # check that we got the proper number of fields
+         if ( $#fields == $#header )
+         {
+            %tickets = build_ticket(\%tickets, \@fields, \@header);	# build ticket
+         }
+         else
+         {
+            print("fields: $#fields\n");
+            print("header: $#header\n");
+            croak("Data fields did not match header\n");
+         }
+         $row=0;		# set end of row flag
+      }
+   }
+
+}
+
+sub build_ticket
+{
+   my ($t, $f, $h) = @_;
+   my %tickets = %{ $t };
+   my @fields = @{ $f };
+   my @header = @{ $h };
+   my $case = shift(@fields);
+   shift(@header);
+   print("\nbuild_ticket\n\n");
+   print("CASE:\t$case\n");
+   my %ticket=();
+   @ticket{@header} = @fields;
+#   print_array(@header);
+   print("$ticket{Type}\n");
+
+   return(%tickets);
+}
+
+sub get_header
+{
+   my @header = ();
+   my ($ln_num, $header)=0;
+   HEADER: foreach my $line (@export)
+   {
+      if ( $line =~ m/<Row>/ )	# find start of header row
+         { $header=1; }		# set that we are in the header row
+      if ( ($header) && ($line =~ m/\[CDATA\[([^\]]+)/) )
+      {
+         my $header = $1;
+         push(@header, $header);
+      }
+      if ( $line =~ m/<\/Row>/ )
+      {
+         $ln_num++;	# so that we trim off all the processed lines
+         last HEADER;
+      }
+      $ln_num++;
+   }
+   print("Line: $ln_num\n");
+   print("$export[$ln_num]\n");
+   @export = @export[$ln_num ... $#export ];
+   return @header
+}

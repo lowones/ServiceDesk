@@ -1,0 +1,41 @@
+#!/usr/bin/perl -w
+use strict;
+require '/home/lowk/bin/lowlib.pl';
+
+print "xml brute force\n";
+my $export_file='/home/lowk/dev/excel/export.xls';
+my @export = read_file($export_file);
+
+my @header = get_header();
+print("$export[0]\n");
+
+sub get_header
+{
+   my @header = ();
+   my ($ln_num, $header)=0;
+   HEADER: foreach my $line (@export)
+   {
+#      print("$line\n");
+      if ( $line =~ m/<Row>/ )
+      {
+#         print("Begin $line\n");
+         $header=1;
+      }
+      if ( ($header) && ($line =~ m/\[CDATA\[([^\]]+)/) )
+      {
+         my $header = $1;
+         push(@header, $header);
+         print("Inside header row: $ln_num\t$header\n");
+      }
+      if ( $line =~ m/<\/Row>/ )
+      {
+         print("End\n");
+         $ln_num++;	# so that we trip off all the processed lines
+         last HEADER;
+      }
+      $ln_num++;
+   }
+   print("Line: $ln_num\n");
+   print("$export[$ln_num]\n");
+   @export = @export[$ln_num ... $#export ];
+}

@@ -1,0 +1,19 @@
+#!//usr/bin/perl
+
+use warnings;
+
+
+my $word = 'kevin:';
+
+remove_tail($word);
+
+sub remove_tail
+{
+   my ($word) = @_;
+   if ( ${word} =~ m/[.,:]$/ )
+   {
+      print("$word\n");
+   }
+   return $word;
+}
+
